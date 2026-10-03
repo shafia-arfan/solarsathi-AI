@@ -1,0 +1,9 @@
+SOLARSATHI TECHNICAL REFERENCE & DER OPERATIONAL GUIDELINES:
+1. Battery Degradation & Internal Resistance:
+Lead-acid and LFP (Lithium Iron Phosphate) batteries experience accelerated aging when subjected to ambient temperatures exceeding 35°C. For every 10°C rise above 25°C, battery life expectancy drops by approximately 50%. Elevated internal resistance (>50 mOhm) signals severe lead sulfate crystallization or lithium-ion loss, causing substantial voltage droop under load.
+
+2. Load-Shedding Protocol (Pakistan Standard Grid NEPRA/WAPDA):
+During unannounced power outages (load-shedding), microgrid inverters must immediately anti-island from the distribution line within 20 milliseconds to prevent back-feeding lineworkers. Energy conservation mode must engage, preserving a minimum of 35% Battery SOC solely for critical security, refrigeration, and fan circuits.
+
+3. EV Charging Optimization:
+Electric Vehicle chargers (Level 2 AC, 3.3 kW - 7.4 kW) constitute peak inductive loads. In residential networks, EV charging should occur during solar surplus windows (10:00 - 15:00) or off-peak night hours (23:00 - 06:00), strictly conditional on distribution transformer loading remaining below 80%.
