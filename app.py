@@ -2,53 +2,54 @@
 import os
 import streamlit as st
 import plotly.graph_objects as go
-import plotly.express as px
 import pandas as pd
 
-from config import DEMO_SCENARIOS, DEFAULT_GEMINI_MODEL
+from config import DEMO_SCENARIOS
 from tools.validation import validate_telemetry_dict
 from tools.batch_tools import process_batch_telemetry
 from agents.supervisor import SupervisorAgent
 from utils.gemini_client import get_gemini_api_key, generate_natural_explanation
 from utils.report_generator import generate_markdown_report
 
-# Page Configuration
+# Import new simulation components
+from simulation.energy import summarize, detect_warnings
+from simulation.checks import check_report
+from simulation.grid_pandapower import run_feeder
+
+# Page Setup
 st.set_page_config(
-    page_title="SolarSathi AI — Microgrid Manager & Health Doctor",
+    page_title="SolarSathi AI — Microgrid & Battery Doctor",
     page_icon="🌞",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Custom Styling
+# Custom Styling (Strictly Amber/Green/Graphite - Anti-Blue Design)
 st.markdown("""
 <style>
     .kpi-card {
-        background-color: #f8f9fa;
-        border-radius: 10px;
-        padding: 16px;
-        border-left: 5px solid #ff9800;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.12);
+        background-color: #FAFAFA;
+        border-radius: 8px;
+        padding: 14px;
+        border-left: 4px solid #EA580C;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.08);
     }
 </style>
 """, unsafe_allow_html=True)
 
-# ----------------- SESSION STATE & INITIALIZATION -----------------
+# ----------------- SESSION STATE -----------------
 if "supervisor" not in st.session_state:
     st.session_state.supervisor = SupervisorAgent()
-
 if "gemini_explanation" not in st.session_state:
     st.session_state.gemini_explanation = None
-
 if "last_scenario" not in st.session_state:
     st.session_state.last_scenario = "Sunny Day"
 
-# ----------------- SIDEBAR: CONFIG & INPUTS -----------------
+# ----------------- SIDEBAR CONTROLS -----------------
 with st.sidebar:
     st.image("https://img.icons8.com/color/96/solar-panel.png", width=64)
     st.title("SolarSathi Controls")
     
-    # Engine Connectivity Status
     api_key_set = bool(get_gemini_api_key())
     if api_key_set:
         st.success("🟢 AI Engine: Gemini Connected")
@@ -56,7 +57,7 @@ with st.sidebar:
         st.warning("🟡 AI Engine: Python Fallback Mode")
         st.caption("Add `GEMINI_API_KEY` to secrets for dynamic LLM reasoning.")
 
-    st.subheader("⚡ Demo Scenarios")
+    st.subheader("⚡ Quick Scenarios")
     selected_scenario = st.selectbox(
         "Load Preconfigured State:",
         options=list(DEMO_SCENARIOS.keys()),
@@ -71,47 +72,41 @@ with st.sidebar:
 
     st.markdown("---")
     st.subheader("📊 Live Telemetry Inputs")
-    
     pv_input = st.number_input("Solar PV Generation (kW)", min_value=0.0, max_value=50.0, value=float(default_vals["pv_generation_kw"]), step=0.2)
     load_input = st.number_input("Load Demand (kW)", min_value=0.1, max_value=50.0, value=float(default_vals["load_demand_kw"]), step=0.2)
     soc_input = st.slider("Battery SOC (%)", min_value=0.0, max_value=100.0, value=float(default_vals["battery_soc"]), step=1.0)
     batt_cap_input = st.number_input("Battery Capacity (kWh)", min_value=1.0, max_value=100.0, value=float(default_vals["battery_capacity_kwh"]), step=1.0)
-    
-    with st.expander("🔋 Battery Diagnostic Telemetry", expanded=False):
+
+    with st.expander("🔋 Battery Health Doctor Parameters", expanded=False):
         age_input = st.number_input("Battery Age (Years)", min_value=0.0, max_value=15.0, value=float(default_vals["battery_age_years"]), step=0.5)
         temp_input = st.number_input("Temperature (°C)", min_value=-10.0, max_value=80.0, value=float(default_vals["battery_temp_c"]), step=1.0)
         ir_input = st.number_input("Internal Resistance (mΩ)", min_value=1.0, max_value=200.0, value=float(default_vals["battery_internal_res_mohm"]), step=1.0)
         rated_ah = st.number_input("Rated Capacity (Ah)", min_value=10.0, max_value=1000.0, value=float(default_vals["rated_capacity_ah"]), step=10.0)
         actual_ah = st.number_input("Actual Capacity (Ah)", min_value=5.0, max_value=1000.0, value=float(default_vals["actual_capacity_ah"]), step=10.0)
 
-    with st.expander("🌐 Grid & EV Telemetry", expanded=False):
+    with st.expander("🌐 Grid & Feeder Controls", expanded=False):
         grid_avail = st.toggle("Grid Available", value=bool(default_vals["grid_available"]))
         load_shed = st.toggle("Load-Shedding Active", value=bool(default_vals["load_shedding"]))
-        ev_demand = st.number_input("EV Charging Demand (kW)", min_value=0.0, max_value=22.0, value=float(default_vals["ev_demand_kw"]), step=0.5)
+        ev_demand = st.number_input("EV Demand (kW)", min_value=0.0, max_value=22.0, value=float(default_vals["ev_demand_kw"]), step=0.5)
         tx_load = st.slider("Transformer Loading (%)", min_value=0.0, max_value=150.0, value=float(default_vals["transformer_loading_pct"]), step=5.0)
 
+# Build & Validate input
 telemetry_data = {
-    "pv_generation_kw": pv_input,
-    "load_demand_kw": load_input,
-    "battery_soc": soc_input,
-    "battery_capacity_kwh": batt_cap_input,
-    "battery_age_years": age_input,
-    "battery_temp_c": temp_input,
-    "battery_internal_res_mohm": ir_input,
-    "rated_capacity_ah": rated_ah,
-    "actual_capacity_ah": actual_ah,
-    "grid_available": grid_avail,
-    "load_shedding": load_shed,
-    "ev_demand_kw": ev_demand,
+    "pv_generation_kw": pv_input, "load_demand_kw": load_input,
+    "battery_soc": soc_input, "battery_capacity_kwh": batt_cap_input,
+    "battery_age_years": age_input, "battery_temp_c": temp_input,
+    "battery_internal_res_mohm": ir_input, "rated_capacity_ah": rated_ah,
+    "actual_capacity_ah": actual_ah, "grid_available": grid_avail,
+    "load_shedding": load_shed, "ev_demand_kw": ev_demand,
     "transformer_loading_pct": tx_load,
 }
 
-# ----------------- EXECUTE DETERMINISTIC MULTI-AGENT WORKFLOW -----------------
 validated_telemetry, error_msg = validate_telemetry_dict(telemetry_data)
 if error_msg:
     st.error(f"Input Validation Error: {error_msg}")
     st.stop()
 
+# Coordinated Multi-Agent Execution
 results = st.session_state.supervisor.coordinate(validated_telemetry)
 solar_res = results["solar"]
 battery_res = results["battery"]
@@ -119,202 +114,193 @@ grid_res = results["grid"]
 plan_res = results["plan"]
 was_replanned = results["replanned"]
 
-# ----------------- MAIN UI TABS (MERGED SYSTEM) -----------------
+# ----------------- MAIN APP TABS -----------------
 st.title("🌞 SolarSathi AI")
 st.markdown("##### *Agentic Solar + Battery Manager & Health Doctor*")
 
-tab_live, tab_batch = st.tabs([
-    "⚡ Real-Time Microgrid Dispatch",
-    "📈 Batch Simulation & 24h Time-Series"
+tab_live, tab_sim, tab_benchmark = st.tabs([
+    "⚡ Real-Time Dispatch",
+    "📈 24h Feeder & Time-Series",
+    "🔬 Benchmark Scenarios & Tests"
 ])
 
-# ----------------- TAB 1: REAL-TIME LIVE DISPATCH -----------------
+# ----------------- TAB 1: REAL-TIME DISPATCH -----------------
 with tab_live:
-    kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
-    kpi1.metric("☀️ Solar PV", f"{validated_telemetry.pv_generation_kw:.1f} kW", delta=solar_res.status)
-    kpi2.metric("🏠 Demand", f"{validated_telemetry.load_demand_kw:.1f} kW")
-    kpi3.metric("🔋 Battery SOC", f"{validated_telemetry.battery_soc:.0f}%", delta=f"{plan_res.battery_action}")
-    kpi4.metric("⚡ Grid State", "Online" if validated_telemetry.grid_available and not validated_telemetry.load_shedding else "Outage")
+    k1, k2, k3, k4, k5 = st.columns(5)
+    k1.metric("☀️ Solar PV", f"{validated_telemetry.pv_generation_kw:.1f} kW", delta=solar_res.status)
+    k2.metric("🏠 Demand", f"{validated_telemetry.load_demand_kw:.1f} kW")
+    k3.metric("🔋 Battery SOC", f"{validated_telemetry.battery_soc:.0f}%", delta=f"{plan_res.battery_action}")
+    k4.metric("⚡ Grid State", "Online" if validated_telemetry.grid_available and not validated_telemetry.load_shedding else "Outage")
     soh_color = "normal" if battery_res.status == "Healthy" else "inverse"
-    kpi5.metric("❤️ Battery SOH", f"{battery_res.health_score:.0f}/100", delta=battery_res.status, delta_color=soh_color)
+    k5.metric("❤️ Battery SOH", f"{battery_res.health_score:.0f}/100", delta=battery_res.status, delta_color=soh_color)
 
     if was_replanned:
-        st.warning("⚠️ **Safety Guardrail Interception:** Supervisor re-routed power flows to prevent overload or thermal damage.")
+        st.warning("⚠️ **Safety Guardrail Active:** Intercepted boundary violation. Dispatched plan was autonomously replanned.")
 
     st.markdown("---")
-
-    col_left, col_right = st.columns([3, 2])
-    with col_left:
+    c_left, c_right = st.columns([3, 2])
+    with c_left:
         st.subheader("⚡ Real-time Power Dispatch")
         flows = plan_res.power_flows
         flow_df = pd.DataFrame({
-            "Flow Path": ["Solar ➔ Load", "Solar ➔ Battery", "Battery ➔ Load", "Grid ➔ Load", "Solar ➔ Grid"],
+            "Path": ["Solar➔Load", "Solar➔Battery", "Battery➔Load", "Grid➔Load", "Solar➔Grid"],
             "Power (kW)": [flows["solar_to_load"], flows["solar_to_battery"], flows["battery_to_load"], flows["grid_to_load"], flows["solar_to_grid"]]
         })
         fig = go.Figure(data=[
             go.Bar(
-                x=flow_df["Flow Path"],
-                y=flow_df["Power (kW)"],
-                marker_color=["#4CAF50", "#2196F3", "#FF9800", "#9C27B0", "#00BCD4"],
-                text=flow_df["Power (kW)"],
-                textposition='auto',
+                x=flow_df["Path"], y=flow_df["Power (kW)"],
+                marker_color=["#10B981", "#F59E0B", "#EA580C", "#78716C", "#059669"],
+                text=flow_df["Power (kW)"], textposition='auto',
             )
         ])
-        fig.update_layout(height=320, margin=dict(l=20, r=20, t=20, b=20), yaxis_title="Dispatched Power (kW)")
+        fig.update_layout(height=300, margin=dict(l=10, r=10, t=20, b=20), yaxis_title="Power (kW)")
         st.plotly_chart(fig, use_container_width=True)
 
-    with col_right:
-        st.subheader("🔋 Battery Health Doctor")
+    with c_right:
+        st.subheader("🔋 Battery Health Status")
         gauge_fig = go.Figure(go.Indicator(
-            mode = "gauge+number",
-            value = battery_res.health_score,
-            domain = {'x': [0, 1], 'y': [0, 1]},
-            title = {'text': f"Status: {battery_res.status}"},
-            gauge = {
+            mode="gauge+number",
+            value=battery_res.health_score,
+            title={'text': f"SOH: {battery_res.status}"},
+            gauge={
                 'axis': {'range': [0, 100]},
-                'bar': {'color': "#2E7D32" if battery_res.status == "Healthy" else ("#F57C00" if battery_res.status == "Warning" else "#D32F2F")},
+                'bar': {'color': "#10B981" if battery_res.status == "Healthy" else ("#F59E0B" if battery_res.status == "Warning" else "#DC2626")},
                 'steps': [
-                    {'range': [0, 50], 'color': "#FFCDD2"},
-                    {'range': [50, 75], 'color': "#FFE0B2"},
-                    {'range': [75, 100], 'color': "#C8E6C9"}
+                    {'range': [0, 50], 'color': "#FEE2E2"},
+                    {'range': [50, 75], 'color': "#FEF3C7"},
+                    {'range': [75, 100], 'color': "#D1FAE5"}
                 ],
             }
         ))
-        gauge_fig.update_layout(height=260, margin=dict(l=20, r=20, t=40, b=20))
+        gauge_fig.update_layout(height=260, margin=dict(l=10, r=10, t=30, b=10))
         st.plotly_chart(gauge_fig, use_container_width=True)
-        st.caption(f"**Operating Rule:** {battery_res.recommended_operating_behavior}")
 
-    st.subheader("📋 Coordinated Agent Dispatch Decisions")
-    c1, c2, c3, c4 = st.columns(4)
-    c1.info(f"**Solar Agent**\n\n{plan_res.solar_action}")
-    c2.info(f"**Battery Agent**\n\n{plan_res.battery_action}")
-    c3.info(f"**Grid Agent**\n\n{plan_res.grid_action}")
-    c4.info(f"**EV Fleet Agent**\n\n{plan_res.ev_action}")
+    st.subheader("📋 Coordinated Agent Actions")
+    a1, a2, a3, a4 = st.columns(4)
+    a1.info(f"**Solar Agent**\n\n{plan_res.solar_action}")
+    a2.info(f"**Battery Agent**\n\n{plan_res.battery_action}")
+    a3.info(f"**Grid Agent**\n\n{plan_res.grid_action}")
+    a4.info(f"**EV Fleet Agent**\n\n{plan_res.ev_action}")
 
     st.markdown("---")
-    st.subheader("🤖 SolarSathi Reasoning & Consultation")
-    call_col, help_col = st.columns([2, 3])
-    with call_col:
-        st.write("Request full engineering justification from Gemini:")
-        ask_ai_btn = st.button("🤖 Ask SolarSathi AI", use_container_width=True, type="primary")
+    st.subheader("🤖 SolarSathi Reasoning & Grounding Verification")
+    btn_col, q_col = st.columns([1, 2])
+    with btn_col:
+        ask_ai = st.button("🤖 Ask SolarSathi AI", use_container_width=True, type="primary")
+    with q_col:
+        custom_q = st.text_input("Consultation Query:", placeholder="e.g. Why was discharge throttled?")
 
-    with help_col:
-        user_query_input = st.text_input("Custom question (optional):", placeholder="e.g., Why did you delay EV charging?")
-
-    if ask_ai_btn or st.session_state.gemini_explanation:
-        if ask_ai_btn:
-            with st.spinner("Multi-Agent Supervisor querying Gemini Reasoning Engine..."):
-                explanation = generate_natural_explanation(
+    if ask_ai or st.session_state.gemini_explanation:
+        if ask_ai:
+            with st.spinner("Querying LLM Reasoning Engine..."):
+                st.session_state.gemini_explanation = generate_natural_explanation(
                     telemetry_dict=telemetry_data,
                     plan_dict=plan_res.model_dump(),
                     battery_dict=battery_res.model_dump(),
-                    user_query=user_query_input if user_query_input else None
+                    user_query=custom_q if custom_q else None
                 )
-                st.session_state.gemini_explanation = explanation
-
-        st.markdown("#### 💡 AI Engineering Explanation")
-        st.write(st.session_state.gemini_explanation)
+        st.markdown(st.session_state.gemini_explanation)
+        
+        # Anti-Hallucination Grounding Verification Check
+        facts_dict = {
+            "pv_kw": validated_telemetry.pv_generation_kw,
+            "load_kw": validated_telemetry.load_demand_kw,
+            "soc": validated_telemetry.battery_soc,
+            "soh": battery_res.health_score,
+            "temp": validated_telemetry.battery_temp_c,
+            "tx_load": validated_telemetry.transformer_loading_pct
+        }
+        grounding_issues = check_report(st.session_state.gemini_explanation, facts_dict)
+        if not grounding_issues:
+            st.success("🛡️ **Anti-Hallucination Guardrail:** 100% of numerical facts confirmed grounded in simulation data.")
+        else:
+            st.caption(f"🔎 Grounding check notes: {'; '.join(grounding_issues[:2])}")
 
     st.markdown("---")
-    subtab1, subtab2 = st.tabs(["🚨 System Alerts & Diagnostics", "📄 Audit Report"])
-    with subtab1:
-        if plan_res.warning_alerts:
-            for alert in plan_res.warning_alerts:
-                st.error(f"⚠️ {alert}")
-        else:
-            st.success("✅ All network buses, transformers, and battery cells operating safely within nominal boundaries.")
-        st.write("**Root-Cause Findings:**")
-        for cause in battery_res.possible_causes:
-            st.write(f"- {cause}")
+    report_md = generate_markdown_report(telemetry_data, plan_res.model_dump(), battery_res.model_dump())
+    st.download_button(
+        label="📥 Download Audit Report (.md)",
+        data=report_md,
+        file_name=f"SolarSathi_Audit_{selected_scenario}.md",
+        mime="text/markdown"
+    )
 
-    with subtab2:
-        st.write("Download an engineering dossier for utility or technician records.")
-        report_md = generate_markdown_report(telemetry_data, plan_res.model_dump(), battery_res.model_dump())
-        st.download_button(
-            label="📥 Download Energy Management Report (.md)",
-            data=report_md,
-            file_name=f"SolarSathi_Audit_{selected_scenario.replace(' ', '_')}.md",
-            mime="text/markdown",
-            use_container_width=True
-        )
-        with st.expander("Preview Audit Report", expanded=False):
-            st.markdown(report_md)
+# ----------------- TAB 2: TIME-SERIES & PANDAPOWER FEEDER -----------------
+with tab_sim:
+    st.subheader("📈 24h Microgrid Physics & Distribution Feeder Simulation")
+    
+    csv_choice = st.selectbox(
+        "Choose Telemetry Dataset:",
+        ["data/scenarios/battery_warning.csv", "data/scenarios/load_shedding.csv", "data/scenarios/normal_day.csv"]
+    )
+    
+    if os.path.exists(csv_choice):
+        sim_df = pd.read_csv(csv_choice)
+        
+        # 1. Run Dispatch Simulation
+        batch_df = process_batch_telemetry(csv_choice, st.session_state.supervisor)
+        
+        # 2. Run PandaPower Grid Feeder Simulation
+        feeder_df = run_feeder(sim_df)
+        
+        s1, s2, s3, s4 = st.columns(4)
+        s1.metric("Outage Hours", int((sim_df.grid_on == 0).sum()))
+        s2.metric("Unserved Energy", f"{sim_df.unserved_kw.sum():.2f} kWh")
+        s3.metric("Peak Battery Temp", f"{sim_df.battery_temp_c.max():.1f} °C")
+        s4.metric("Worst Feeder Voltage", f"{feeder_df['min_voltage_pu'].dropna().min():.3f} p.u.")
 
-# ----------------- TAB 2: BATCH CSV & 24H TIME-SERIES SIMULATOR -----------------
-with tab_batch:
-    st.subheader("📈 24-Hour Microgrid Time-Series Simulation")
-    st.write("Run multi-agent dispatch and safety guardrails across full 24-hour load and solar curves from CSV telemetry.")
+        # Power balance chart
+        fig_ts = go.Figure()
+        fig_ts.add_trace(go.Scatter(x=sim_df.hour, y=sim_df.load_kw, name="Load (kW)", line=dict(color="#DC2626", width=2)))
+        fig_ts.add_trace(go.Scatter(x=sim_df.hour, y=sim_df.solar_kw, name="Solar (kW)", line=dict(color="#10B981", width=2)))
+        fig_ts.add_trace(go.Scatter(x=sim_df.hour, y=sim_df.discharge_kw, name="Battery Discharge (kW)", line=dict(color="#EA580C", dash="dot")))
+        fig_ts.add_trace(go.Scatter(x=sim_df.hour, y=sim_df.charge_kw, name="Battery Charge (kW)", line=dict(color="#F59E0B", dash="dash")))
+        fig_ts.update_layout(title="24-Hour Energy Balance", xaxis_title="Hour of Day", yaxis_title="Power (kW)", height=340)
+        st.plotly_chart(fig_ts, use_container_width=True)
 
-    batch_col1, batch_col2 = st.columns([2, 1])
-    with batch_col1:
-        uploaded_csv = st.file_uploader("Upload custom CSV file (or run default Pakistan 24h sample):", type=["csv"])
-    with batch_col2:
-        st.write("")
-        st.write("")
-        run_batch_btn = st.button("🚀 Run Multi-Agent Batch Engine", type="primary", use_container_width=True)
+        # PandaPower Voltage & Line Loading
+        st.markdown("#### ⚡ PandaPower Distribution Feeder Analysis")
+        col_f1, col_f2 = st.columns(2)
+        with col_f1:
+            fig_v = go.Figure(go.Scatter(x=feeder_df.hour, y=feeder_df.min_voltage_pu, mode="lines+markers", line=dict(color="#D97706")))
+            fig_v.add_hline(y=0.95, line_dash="dash", line_color="#DC2626", annotation_text="Grid Lower Limit (0.95 p.u.)")
+            fig_v.update_layout(title="Bus Voltage Profile (p.u.)", xaxis_title="Hour", height=280)
+            st.plotly_chart(fig_v, use_container_width=True)
+        with col_f2:
+            fig_l = go.Figure(go.Bar(x=feeder_df.hour, y=feeder_df.line_loading_pct, marker_color="#EA580C"))
+            fig_l.add_hline(y=100.0, line_dash="dash", line_color="#DC2626", annotation_text="100% Thermal Rating")
+            fig_l.update_layout(title="Distribution Line Loading (%)", xaxis_title="Hour", height=280)
+            st.plotly_chart(fig_l, use_container_width=True)
 
-    default_csv_path = "Data/sample_energy_data.csv"
-    target_csv = uploaded_csv if uploaded_csv is not None else (default_csv_path if os.path.exists(default_csv_path) else None)
-
-    if target_csv is None:
-        st.info("ℹ️ No CSV selected and `Data/sample_energy_data.csv` was not found. Please upload a CSV to simulate.")
+        st.dataframe(sim_df, use_container_width=True)
     else:
-        if run_batch_btn or "batch_results" in st.session_state:
-            if run_batch_btn:
-                with st.spinner("Processing time-series records through Solar, Battery, Grid, and Safety Agents..."):
-                    st.session_state.batch_results = process_batch_telemetry(target_csv, st.session_state.supervisor)
+        st.info("Run `python -m simulation.scenarios` to generate scenario CSVs.")
 
-            b_df = st.session_state.batch_results
+# ----------------- TAB 3: BENCHMARK SUITE & TESTS -----------------
+with tab_benchmark:
+    st.subheader("🔬 Benchmark Validation & Automated Tests")
+    st.write("Run mathematical unit tests confirming energy conservation and anti-hallucination compliance.")
 
-            # Batch Summary Statistics
-            sb1, sb2, sb3, sb4 = st.columns(4)
-            sb1.metric("Total Records Processed", len(b_df))
-            sb2.metric("Safety Guardrail Interventions", int(b_df["Safety_Replanned"].sum()))
-            sb3.metric("Peak Dispatched Solar", f"{b_df['Flow_Solar_to_Load_kW'].max():.1f} kW")
-            sb4.metric("Avg Battery Health Score", f"{b_df['Battery_SOH_Score'].mean():.1f}/100")
+    if st.button("🧪 Execute Pytest Suite", type="primary"):
+        import pytest
+        class TestPlugin:
+            def __init__(self):
+                self.reports = []
+            def pytest_runtest_logreport(self, report):
+                if report.when == "call":
+                    self.reports.append(report)
 
-            # Time-Series Visualization
-            x_axis = "hour" if "hour" in b_df.columns else b_df.index
-
-            st.markdown("#### ⚡ 24-Hour Autonomous Power Dispatch Profile")
-            sim_fig = go.Figure()
-            sim_fig.add_trace(go.Scatter(x=b_df[x_axis] if "hour" in b_df.columns else b_df.index, y=b_df["pv_generation_kw"], mode="lines", name="Solar PV Generation (kW)", line=dict(color="#4CAF50", width=2)))
-            sim_fig.add_trace(go.Scatter(x=b_df[x_axis] if "hour" in b_df.columns else b_df.index, y=b_df["load_demand_kw"], mode="lines", name="Load Demand (kW)", line=dict(color="#F44336", width=2)))
-            sim_fig.add_trace(go.Scatter(x=b_df[x_axis] if "hour" in b_df.columns else b_df.index, y=b_df["Flow_Battery_to_Load_kW"], mode="lines", name="Battery Discharge (kW)", line=dict(color="#FF9800", width=2, dash="dot")))
-            sim_fig.add_trace(go.Scatter(x=b_df[x_axis] if "hour" in b_df.columns else b_df.index, y=b_df["Flow_Solar_to_Battery_kW"], mode="lines", name="Battery Solar Charge (kW)", line=dict(color="#2196F3", width=2, dash="dash")))
-
-            sim_fig.update_layout(
-                xaxis_title="Time / Hour",
-                yaxis_title="Power (kW)",
-                height=380,
-                margin=dict(l=20, r=20, t=30, b=20),
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-            )
-            st.plotly_chart(sim_fig, use_container_width=True)
-
-            # Battery SOC & Health Profile
-            st.markdown("#### 🔋 Battery SOC & Health Trajectory")
-            batt_fig = go.Figure()
-            batt_fig.add_trace(go.Scatter(x=b_df[x_axis] if "hour" in b_df.columns else b_df.index, y=b_df["battery_soc"], mode="lines+markers", name="Battery SOC (%)", line=dict(color="#00BCD4", width=2)))
-            batt_fig.add_trace(go.Scatter(x=b_df[x_axis] if "hour" in b_df.columns else b_df.index, y=b_df["Battery_SOH_Score"], mode="lines", name="Battery SOH Score (/100)", line=dict(color="#8BC34A", width=2, dash="dash")))
-            batt_fig.update_layout(
-                xaxis_title="Time / Hour",
-                yaxis_title="Percentage (%)",
-                height=300,
-                margin=dict(l=20, r=20, t=30, b=20)
-            )
-            st.plotly_chart(batt_fig, use_container_width=True)
-
-            # Interactive Telemetry and AI Decision Table
-            st.markdown("#### 📋 Processed Telemetry with Agent Decisions")
-            st.dataframe(b_df, use_container_width=True)
-
-            # Download Enriched Decision CSV
-            csv_export = b_df.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label="📥 Download Full Processed AI Decisions Dataset (.csv)",
-                data=csv_export,
-                file_name="solarsathi_simulated_dispatch_results.csv",
-                mime="text/csv",
-                use_container_width=True
-            )
+        plugin = TestPlugin()
+        ret = pytest.main(["-q", "tests/"], plugins=[plugin])
+        
+        passed = sum(1 for r in plugin.reports if r.passed)
+        failed = sum(1 for r in plugin.reports if r.failed)
+        
+        if failed == 0:
+            st.success(f"✅ All {passed} Automated Tests Passed Successfully!")
+        else:
+            st.error(f"❌ Tests Finished with {failed} failures ({passed} passed).")
+            
+        for r in plugin.reports:
+            status_icon = "✅" if r.passed else "❌"
+            st.text(f"{status_icon} {r.nodeid.split('::')[-1]}")
