@@ -1,0 +1,64 @@
+{
+  "normal_day": {
+    "flags": [],
+    "summary": {
+      "total_load_kwh": 38.07,
+      "total_solar_kwh": 30.38,
+      "grid_import_kwh": 27.02,
+      "unserved_kwh": 0.0,
+      "curtailed_kwh": 15.12,
+      "peak_load_kw": 2.96,
+      "outage_hours": 0,
+      "min_soc_pct": 88.5,
+      "end_soc_pct": 100.0,
+      "max_temp_c": 33.0,
+      "min_voltage_v": 51.1,
+      "battery_equiv_cycles": 0.21,
+      "load_served_pct": 100.0,
+      "solar_utilisation_pct": 50.2
+    }
+  },
+  "load_shedding": {
+    "flags": [],
+    "summary": {
+      "total_load_kwh": 38.07,
+      "total_solar_kwh": 27.35,
+      "grid_import_kwh": 25.92,
+      "unserved_kwh": 0.0,
+      "curtailed_kwh": 12.49,
+      "peak_load_kw": 2.96,
+      "outage_hours": 6,
+      "min_soc_pct": 41.4,
+      "end_soc_pct": 90.0,
+      "max_temp_c": 33.9,
+      "min_voltage_v": 45.7,
+      "battery_equiv_cycles": 0.69,
+      "load_served_pct": 100.0,
+      "solar_utilisation_pct": 54.3
+    }
+  },
+  "battery_warning": {
+    "flags": [
+      "LOW_SOC",
+      "HIGH_TEMP",
+      "LOW_VOLTAGE",
+      "UNSERVED_LOAD"
+    ],
+    "summary": {
+      "total_load_kwh": 38.07,
+      "total_solar_kwh": 15.19,
+      "grid_import_kwh": 25.7,
+      "unserved_kwh": 2.2,
+      "curtailed_kwh": 2.69,
+      "peak_load_kw": 2.96,
+      "outage_hours": 4,
+      "min_soc_pct": 10.0,
+      "end_soc_pct": 38.5,
+      "max_temp_c": 51.0,
+      "min_voltage_v": 43.4,
+      "battery_equiv_cycles": 0.97,
+      "load_served_pct": 94.2,
+      "solar_utilisation_pct": 82.3
+    }
+  }
+}

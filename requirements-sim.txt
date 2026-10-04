@@ -1,0 +1,3 @@
+# OPTIONAL: grid simulation. Keep OUT of the main requirements.txt so Streamlit deploy stays light.
+# Check the newest 3.x version with: pip index versions pandapower
+pandapower
